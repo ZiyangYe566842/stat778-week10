@@ -1,0 +1,289 @@
+---
+title: inclass-week10
+author: Ziyang Ye
+format:
+    html:
+        code-fold: False
+        embed-resources: true
+        self-contained: true
+        theme:
+            light: [cosmo, theme.scss]
+            dark: [cosmo, theme-dark.scss]
+        toc: true
+---
+
+### Activity 1
+
+Gibbs sampling relies on iterative conditional sampling, forming a Markov chain whose stationary distribution matches the target distribution, but it does not require direct factorization into explicit marginals or conditionals.
+
+Factorization strategy explicitly decomposes the joint distribution into simpler distributions from which we directly sample without iterations or Markov chain transitions.
+
+Thus, Gibbs sampling is especially beneficial in high-dimensional, complex scenarios where direct sampling via factorization is infeasible, while the factorization strategy works best when a suitable explicit decomposition and sampling methods are readily available.
+
+### Activity2
+
+likelihood_function: $$
+    L(\beta_0,\ \boldsymbol{\beta}\mid Y_i,\ \mathbf{X}_i)=\frac{1}{\sqrt{2\pi}}\exp\left\{-\frac{1}{2}\left(Y_i-\beta_0-\mathbf{X}_i^{\top}\boldsymbol{\beta}\right)^2\right\}
+    $$ 
+### Activity3
+
+posterior_distribution:  $$
+    f(\beta_0, \boldsymbol{\beta} \mid Y_i, \mathbf{X}_i) 
+    \propto \left[ \prod_{i=1}^{n}\frac{1}{\sqrt{2\pi}} 
+    \exp\left(-\frac{1}{2}(Y_i-\beta_0-\mathbf{X}_i^{\top}\boldsymbol{\beta})^2\right)\right] 
+    \cdot f_1(\beta_0) \cdot f_2(\boldsymbol{\beta}\mid\beta_0),
+    $$
+  
+where the priors are:
+
+$$
+f_1(\beta_0)\propto
+\begin{cases}
+\phi(\beta_0), & 0\leq \beta_0\leq 4 \\[6pt]
+0, & \text{o.w.}
+\end{cases},\quad
+f_2(\boldsymbol{\beta}\mid\beta_0)\propto
+\begin{cases}
+e^{-\prod_{j=1}^{p}\left|(\beta_j-\beta_0)| - \max_{j=1,\dots,p}|\beta_j-\beta_0|\right|}, & 0\leq\beta_j\leq 10\ \forall j \\[6pt]
+0, & \text{o.w.}
+\end{cases}
+$$
+```{r}
+library(ggplot2)
+library(dplyr)
+
+f2_density <- function(beta_vec, beta0){
+  if (any(beta_vec < 0 | beta_vec > 10)) return(0)
+  prod_abs <- prod(abs(beta_vec - beta0))
+  max_abs <- max(abs(beta_vec - beta0))
+  return(exp(-prod_abs - max_abs))
+}
+
+compute_density_grid <- function(beta0, grid_size = 100) {
+  beta_seq <- seq(0, 10, length.out = grid_size)
+  grid <- expand.grid(beta1 = beta_seq, beta2 = beta_seq)
+  grid$density <- numeric(nrow(grid))
+  
+  for (i in seq_len(nrow(grid))) {
+    beta_vec <- c(grid$beta1[i], grid$beta2[i])
+    grid$density[i] <- f2_density(beta_vec, beta0)
+  }
+  
+  return(grid)
+}
+
+
+visualize_f2 <- function(beta0) {
+  grid <- compute_density_grid(beta0)
+  
+  ggplot(grid, aes(beta1, beta2, fill = density)) +
+    geom_raster(interpolate = TRUE) +
+    scale_fill_viridis_c() +
+    labs(title = paste("Density f2 with beta0 =", beta0),
+         x = expression(beta[1]), y = expression(beta[2])) +
+    theme_minimal()
+}
+
+
+visualize_f2(1)
+visualize_f2(3)
+
+
+```
+
+### Activity4
+```{r}
+# f1_sampler: Efficient sampling from a truncated normal between 0 and 4
+f1_sampler <- function(n) {
+  qnorm(runif(n, pnorm(0), pnorm(4)))
+}
+
+
+f2_sampler <- function(n, p, beta0) {
+  samples <- matrix(0, nrow = n, ncol = p)
+  count <- 0
+  while (count < n) {
+    candidate <- runif(p, 0, 10)
+    density_val <- exp(-prod(abs(candidate - beta0)) - max(abs(candidate - beta0)))
+    if (runif(1) < density_val) {
+      count <- count + 1
+      samples[count, ] <- candidate
+    }
+  }
+  colnames(samples) <- paste0("beta", 1:p)
+  return(samples)
+}
+
+
+
+```
+
+
+
+```{r}
+
+n_samples <- 10000
+
+samples_f1 <- f1_sampler(n_samples)
+
+# Check if all samples are within the truncation limits (0 to 4)
+all(samples_f1 >= 0 & samples_f1 <= 4) 
+
+summary(samples_f1)
+
+# Plot histogram to verify the truncated normal shape
+hist(samples_f1, breaks = 50, probability = TRUE,
+     main = "Samples from f1_sampler (Truncated Normal)",
+     xlab = expression(beta[0]), col = "skyblue")
+
+# Add the theoretical density curve
+curve(dnorm(x) / (pnorm(4) - pnorm(0)), from = 0, to = 4,
+      add = TRUE, col = "red", lwd = 2)
+
+```
+```{r}
+# Explicit numeric check for efficiency
+efficiency <- length(samples_f1) / n_samples
+print(efficiency)  
+
+```
+
+
+### Activity5
+```{r}
+gibbs_sampler <- function(n_iter, p, init_beta0 = 2) {
+  # Storage for samples
+  beta0_samples <- numeric(n_iter)
+  beta_samples <- matrix(0, nrow = n_iter, ncol = p)
+  colnames(beta_samples) <- paste0("beta", 1:p)
+  
+  # Initialize with starting values
+  beta0 <- f1_sampler(1)
+  beta <- runif(p, 0, 10)
+  
+  for (iter in 1:n_iter) {
+    # Sample beta given beta0 using the updated f2_sampler;
+    # ensure candidate is a vector.
+    beta_candidate <- as.vector(f2_sampler(1, p, beta0))
+    beta <- beta_candidate
+    
+    # Sample beta0 given beta using f1_sampler
+    beta0 <- f1_sampler(1)
+    
+    beta0_samples[iter] <- beta0
+    beta_samples[iter, ] <- beta
+  }
+  
+  list(beta0 = beta0_samples, beta = beta_samples)
+}
+
+# Example run
+set.seed(123)
+samples_prior <- gibbs_sampler(n_iter = 5000, p = 2)
+
+# Check the samples: histogram for beta0 and scatter plot for beta
+par(mfrow = c(1,2))
+hist(samples_prior$beta0, breaks = 50, main = expression(paste("Histogram of ", beta[0])),
+     xlab = expression(beta[0]), col = "lightblue")
+plot(samples_prior$beta, col = "blue", pch = 16, cex = 0.5,
+     xlab = expression(beta[1]), ylab = expression(beta[2]),
+     main = expression(paste("Scatterplot of sampled ", beta)))
+
+```
+
+### Activity6
+```{r}
+library(ggplot2)
+library(dplyr)
+data <- read.csv("experiments.csv")
+
+```
+
+This function incorporates the likelihood from Activity 2 and priors from Activity 3 and 4.
+
+
+Gibbs sampler for posterior distribution
+```{r}
+# Posterior sampler function
+posterior_sampler <- function(Y, X, n_iter = 5000) {
+  n <- length(Y)
+  p <- ncol(X)
+  
+  # Storage for samples
+  samples_beta0 <- numeric(n_iter)
+  samples_beta <- matrix(0, n_iter, p)
+  
+  # Initialize parameters
+  beta0 <- f1_sampler(1)
+  beta <- runif(p, 0, 10)
+  
+  for (iter in 1:n_iter) {
+    # Metropolis update for beta given beta0 using f2_sampler
+    beta_candidate <- as.vector(f2_sampler(1, p, beta0))
+    loglik_current <- sum(dnorm(Y, mean = beta0 + X %*% beta, log = TRUE))
+    loglik_candidate <- sum(dnorm(Y, mean = beta0 + X %*% beta_candidate, log = TRUE))
+    accept_prob <- min(1, exp(loglik_candidate - loglik_current))
+    if (runif(1) < accept_prob) {
+      beta <- beta_candidate
+    }
+    
+    # Metropolis update for beta0 given beta using f1_sampler
+    beta0_candidate <- f1_sampler(1)
+    loglik_current_beta0 <- sum(dnorm(Y, mean = beta0 + X %*% beta, log = TRUE))
+    loglik_candidate_beta0 <- sum(dnorm(Y, mean = beta0_candidate + X %*% beta, log = TRUE))
+    accept_prob_beta0 <- min(1, exp(loglik_candidate_beta0 - loglik_current_beta0))
+    if (runif(1) < accept_prob_beta0) {
+      beta0 <- beta0_candidate
+    }
+    
+    samples_beta0[iter] <- beta0
+    samples_beta[iter, ] <- beta
+  }
+  
+  list(beta0 = samples_beta0, beta = samples_beta)
+}
+
+# Load the experimental data
+data <- read.csv("experiments.csv")
+library(dplyr)
+
+experiment_ids <- unique(data$experiment)
+results <- list()
+
+for (exp_id in experiment_ids) {
+  exp_data <- filter(data, experiment == exp_id)
+  Y <- exp_data$y
+  X <- as.matrix(exp_data[, c("x1", "x2")])
+  
+  set.seed(123 + exp_id)  # Different seed for each experiment
+  results[[exp_id]] <- posterior_sampler(Y, X, n_iter = 5000)
+}
+
+# Combine samples for all experiments for plotting
+combined_samples <- data.frame()
+for (exp_id in experiment_ids) {
+  df <- data.frame(
+    beta0 = results[[exp_id]]$beta0,
+    beta1 = results[[exp_id]]$beta[, 1],
+    beta2 = results[[exp_id]]$beta[, 2],
+    experiment = paste0("Exp", exp_id)
+  )
+  combined_samples <- rbind(combined_samples, df)
+}
+
+# Function to plot marginal posterior densities
+plot_density <- function(param_name) {
+  ggplot(combined_samples, aes_string(x = param_name, color = "experiment")) +
+    geom_density() +
+    theme_minimal() +
+    labs(title = paste("Posterior Density of", param_name),
+         x = param_name, y = "Density")
+}
+
+# Plot the marginal densities for beta0, beta1, and beta2
+plot_density("beta0")
+plot_density("beta1")
+plot_density("beta2")
+
+```
+
